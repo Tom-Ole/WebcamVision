@@ -9,8 +9,8 @@ let detector = "canny";
 document.getElementById("raw").addEventListener("click", () => detector = "");
 document.getElementById("sobelCPU").addEventListener("click", () => detector = "sobelcpu");
 document.getElementById("depth").addEventListener("click", () => detector = "depth");
-document.getElementById("sobelDepth").addEventListener("click", () => detector = "sobelDepth");
 document.getElementById("canny").addEventListener("click", () => detector = "canny");
+
 document.getElementById("depthAlpha").addEventListener("input", () => {
     document.getElementById("alpha").innerText = document.getElementById("depthAlpha").value
 });
@@ -69,8 +69,6 @@ function drawToCanvas() {
         SobelCPU();
     } else if (detector == "depth") {
         depth();
-    } else if (detector == "sobelDepth") {
-        SobelAndDepth();
     } else if (detector == "canny") {
         Canny();
     } else {
@@ -465,84 +463,6 @@ function depth() {
 
             output[i] = output[i + 1] = output[i + 2] = Math.min(255, Math.max(0, gammeCorrection * 255));
             output[i + 3] = 255; // alpha;
-        }
-    }
-
-    frame.data.set(output);
-    ctx.putImageData(frame, 0, 0);
-}
-
-function SobelAndDepth() {
-    ctx.drawImage(video, 0, 0, CAM_WIDTH, CAM_HEIGHT);
-
-    const frame = ctx.getImageData(0, 0, CAM_WIDTH, CAM_HEIGHT);
-    const pixels = frame.data;
-    const width = frame.width;
-    const height = frame.height;
-
-    const output = new Uint8ClampedArray(pixels.length);
-
-    // Sobel kernels
-    const gx = [
-        [1, 2, 1],
-        [0, 0, 0],
-        [-1, -2, -1]
-    ];
-    const gy = [
-        [1, 0, -1],
-        [2, 0, -2],
-        [1, 0, -1]
-    ];
-
-    function idx(x, y) { return (y * width + x) * 4; }
-
-    const alpha = parseFloat(document.getElementById("depthAlpha").value);
-    const invAlpha = 1 - alpha;
-
-    for (let y = 1; y < height - 1; y++) {
-
-        const posDepth = 1 - y / height;
-
-        for (let x = 1; x < width - 1; x++) {
-            let sumX = 0;
-            let sumY = 0;
-
-            for (let ky = -1; ky <= 1; ky++) {
-                for (let kx = -1; kx <= 1; kx++) {
-                    const i = idx(x + kx, y + ky);
-
-                    const r = pixels[i];
-                    const g = pixels[i + 1];
-                    const b = pixels[i + 2];
-                    const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-
-                    sumX += gray * gx[ky + 1][kx + 1];
-                    sumY += gray * gy[ky + 1][kx + 1];
-
-                }
-            }
-
-            const mag = Math.sqrt(sumX * sumX + sumY * sumY);
-            const outIdx = idx(x, y);
-
-            const gradOri = Math.atan2(sumX, sumY);
-
-
-            const i = idx(x, y);
-
-            const r = pixels[i];
-            const g = pixels[i + 1];
-            const b = pixels[i + 2];
-
-            const grayScale = 0.299 * r + 0.587 * g + 0.114 * b;
-            const intensityDepth = 1 - grayScale / 255; // Enhanced depth calculation with better contrast
-            const depthValue = alpha * posDepth + invAlpha * intensityDepth;
-            const gammeCorrection = Math.pow(depthValue, 0.8);
-
-
-            output[outIdx] = output[outIdx + 1] = output[outIdx + 2] = gradOri * mag * gammeCorrection;
-            output[outIdx + 3] = 255; // alpha;
-
         }
     }
 
