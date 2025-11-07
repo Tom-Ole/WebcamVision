@@ -665,12 +665,6 @@ function applyMotionDetection(ctx, video, width, height) {
     frame.data.set(output);
     ctx.putImageData(frame, 0, 0);
 
-    // Debug max diff
-    let max = 0;
-    for (let i = 0; i < diff.length; i++) {
-        if (diff[i] > max) max = diff[i];
-    }
-    console.log("Max diff:", max);
 }
 
 
