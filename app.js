@@ -619,7 +619,7 @@ function applyMotionDetection(ctx, video, width, height) {
     }
 
     // Decay the trail buffer to create fading effect
-    const decayAmount = 2;
+    const decayAmount = 2.5;
     for (let i = 0; i < state.motionTrail.length; i++) {
         state.motionTrail[i] = Math.max(0, state.motionTrail[i] - decayAmount);
     }
@@ -811,7 +811,6 @@ if (document.readyState === "loading") {
 
 
 // Ideas by AI
-// Motion Detec
 // Background Subtraction
 // Optical Flow (Lucas–Kanade or Horn–Schunck Lite)
 // Hough Transform (for Lines or Circles)
