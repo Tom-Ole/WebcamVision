@@ -15,7 +15,7 @@ const CONFIG = {
     CAM_HEIGHT: 480,
     FRAME_RATE: 24,
     SMOOTH_FACTOR: 0.8,
-    DEFAULT_DETECTOR: "raw"
+    DEFAULT_DETECTOR: "motiondetection"
 }
 
 const KERNELS = {
@@ -37,7 +37,8 @@ const state = {
     previousFrame: null,
     video: null,
     canvas: null,
-    ctx: null
+    ctx: null,
+    motionTrail: null
 }
 
 
@@ -232,7 +233,7 @@ function applyDoubleThreshold(nonMaxSuppressed, width, height, lowRatio, highRat
     // Find maximum magnitude
     let maxMag = 0;
     for (let i = 0; i < nonMaxSuppressed.length; i++) {
-        if(nonMaxSuppressed[i] > maxMag) maxMag = nonMaxSuppressed[i];
+        if (nonMaxSuppressed[i] > maxMag) maxMag = nonMaxSuppressed[i];
     }
 
     const lowThreshold = maxMag * lowRatio;
@@ -570,6 +571,110 @@ function applyHistogramEq(ctx, video, width, height) {
     ctx.putImageData(frame, 0, 0);
 }
 
+function applyMotionDetection(ctx, video, width, height) {
+    ctx.drawImage(video, 0, 0, width, height);
+
+    const frame = ctx.getImageData(0, 0, width, height);
+    const pixels = frame.data;
+
+    const grayScaleFrame = new Uint8ClampedArray(pixels.length);
+
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const idx = pixelIndex(x, y, width);
+            const r = pixels[idx];
+            const g = pixels[idx + 1];
+            const b = pixels[idx + 2];
+            const grayscale = rgbToGrayscale(r, g, b);
+            grayScaleFrame[idx] = grayScaleFrame[idx + 1] = grayScaleFrame[idx + 2] = grayscale;
+            grayScaleFrame[idx + 3] = 255;
+        }
+    }
+
+    if (!state.previousFrame) {
+        state.previousFrame = grayScaleFrame;
+        return;
+    }
+
+    const diff = new Uint8ClampedArray(pixels.length);
+
+    const threshold = parseFloat(document.getElementById("motionDetectorThreshold").value);
+
+    // Initialize the trail buffer if missing
+    if (!state.motionTrail) {
+        state.motionTrail = new Uint8ClampedArray(width * height);
+    }
+
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const idx = pixelIndex(x, y, width);
+            let d = Math.abs(state.previousFrame[idx] - grayScaleFrame[idx]);
+            if (d < threshold) d = 0;
+            diff[idx] = diff[idx + 1] = diff[idx + 2] = d;
+            diff[idx + 3] = 255;
+
+            const trailIdx = y * width + x;
+            state.motionTrail[trailIdx] = Math.min(255, state.motionTrail[trailIdx] + d);
+        }
+    }
+
+    // Decay the trail buffer to create fading effect
+    const decayAmount = 2;
+    for (let i = 0; i < state.motionTrail.length; i++) {
+        state.motionTrail[i] = Math.max(0, state.motionTrail[i] - decayAmount);
+    }
+
+    state.previousFrame = grayScaleFrame;
+
+    const output = new Uint8ClampedArray(pixels.length);
+
+    const filterColor = {r: 255, g:0, b: 0};
+    const blendStrength = 0.7;
+    const inverseStrength = 1.0 - blendStrength;
+
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const idx = pixelIndex(x, y, width);
+            const r = pixels[idx];
+            const g = pixels[idx + 1];
+            const b = pixels[idx + 2];
+
+            const intensity = state.motionTrail[y * width + x];
+
+            const gray = rgbToGrayscale(r, g, b);
+
+            const filteredR = (gray * filterColor.r) / 255;
+            const filteredG = (gray * filterColor.g) / 255;
+            const filteredB = (gray * filterColor.b) / 255;
+
+            // Color motion trail
+            if (intensity > 0) {
+                output[idx] = r * inverseStrength + filteredR * blendStrength;
+                output[idx + 1] = g * inverseStrength + filteredG * blendStrength;
+                output[idx + 2] = b * inverseStrength + filteredB * blendStrength;
+                output[idx + 3] = 255;
+            } else {
+                output[idx] = r;
+                output[idx + 1] = g;
+                output[idx + 2] = b;
+                output[idx + 3] = 255;
+            }
+        }
+    }
+
+    frame.data.set(output);
+    ctx.putImageData(frame, 0, 0);
+
+    // Debug max diff
+    let max = 0;
+    for (let i = 0; i < diff.length; i++) {
+        if (diff[i] > max) max = diff[i];
+    }
+    console.log("Max diff:", max);
+}
+
+
+
 
 // =================================
 // UI Events
@@ -583,7 +688,8 @@ function setupDetectorButtons() {
         canny: "canny",
         grayscale: "grayscale",
         colorFilter: "colorfilter",
-        histogramEq: "histogrameq"
+        histogramEq: "histogrameq",
+        motiondetection: "motiondetection",
     };
 
 
@@ -600,7 +706,8 @@ function setupParameterControls() {
         { sliderId: "depthAlpha", labelId: "alpha" },
         { sliderId: "colorIntensityRange", labelId: "colorIntensity" },
         { sliderId: "highThreshold", labelId: "high" },
-        { sliderId: "lowThreshold", labelId: "low" }
+        { sliderId: "lowThreshold", labelId: "low" },
+        { sliderId: "motionDetectorThreshold", labelId: "motionDet" }
     ];
 
     controls.forEach(({ sliderId, labelId }) => {
@@ -669,13 +776,15 @@ function renderLoop() {
     } else if (det == "colorfilter") {
         applyColorFilter(state.ctx, state.video, CONFIG.CAM_WIDTH, CONFIG.CAM_HEIGHT)
     } else if (det == "depth") {
-       applyDepth(state.ctx, state.video, CONFIG.CAM_WIDTH, CONFIG.CAM_HEIGHT)
+        applyDepth(state.ctx, state.video, CONFIG.CAM_WIDTH, CONFIG.CAM_HEIGHT)
     } else if (det == "histogrameq") {
-       applyHistogramEq(state.ctx, state.video, CONFIG.CAM_WIDTH, CONFIG.CAM_HEIGHT)
+        applyHistogramEq(state.ctx, state.video, CONFIG.CAM_WIDTH, CONFIG.CAM_HEIGHT)
     } else if (det == "sobel") {
         applySobelToOutput(state.ctx, state.video, CONFIG.CAM_WIDTH, CONFIG.CAM_HEIGHT)
-    } else if(det == "canny") {
+    } else if (det == "canny") {
         applyCanny(state.ctx, state.video, CONFIG.CAM_WIDTH, CONFIG.CAM_HEIGHT)
+    } else if (det == "motiondetection") {
+        applyMotionDetection(state.ctx, state.video, CONFIG.CAM_WIDTH, CONFIG.CAM_HEIGHT)
     } else {
         state.ctx.drawImage(state.video, 0, 0, CONFIG.CAM_WIDTH, CONFIG.CAM_HEIGHT);
     }
@@ -689,18 +798,18 @@ function renderLoop() {
 
 
 function initialize() {
-  setupCanvas();
-  setupVideo();
-  initializeCamera();
-  setupDetectorButtons();
-  setupParameterControls();
+    setupCanvas();
+    setupVideo();
+    initializeCamera();
+    setupDetectorButtons();
+    setupParameterControls();
 }
 
 // Start application when DOM is ready
 if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", initialize);
+    document.addEventListener("DOMContentLoaded", initialize);
 } else {
-  initialize();
+    initialize();
 }
 
 // ============================
