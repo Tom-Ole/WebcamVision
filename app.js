@@ -1,217 +1,158 @@
 // https://en.wikipedia.org/wiki/Edge_detection
 
-
-const CAM_WIDTH = 640;
-const CAM_HEIGHT = 480;
-
-let detector = "histogrameq";
-
-document.getElementById("raw").addEventListener("click", () => detector = "");
-document.getElementById("sobelCPU").addEventListener("click", () => detector = "sobelcpu");
-document.getElementById("depth").addEventListener("click", () => detector = "depth");
-document.getElementById("canny").addEventListener("click", () => detector = "canny");
-document.getElementById("grayscale").addEventListener("click", () => detector = "grayscale");
-document.getElementById("colorFilter").addEventListener("click", () => detector = "colorfilter");
-document.getElementById("histogramEq").addEventListener("click", () => detector = "histogrameq");
+// THis project is about the single algorithm and learning Computer Vision in generell. 
+// I know there are some practices which are not really seen as "good"
+// I will (maybe) refactor the code and also implement GPU versions of the Algos.
 
 
-
-document.getElementById("depthAlpha").addEventListener("input", () => {
-    document.getElementById("alpha").innerText = document.getElementById("depthAlpha").value
-});
-
-document.getElementById("colorIntensityRange").addEventListener("input", () => {
-    document.getElementById("colorIntensity").innerText = document.getElementById("colorIntensityRange").value
-});
-
-const highThresholdEle = document.getElementById("highThreshold");
-
-highThresholdEle.addEventListener("input", () => {
-    document.getElementById("high").innerText = highThresholdEle.value
-});
-
-const lowThresholdEle = document.getElementById("lowThreshold")
-
-lowThresholdEle.addEventListener("input", () => {
-    document.getElementById("low").innerText = lowThresholdEle.value
-});
-
-const canvas = document.getElementById("canvas");
-canvas.width = CAM_WIDTH;
-canvas.height = CAM_HEIGHT;
-// canvas.style.backgroundColor = "white";
-
-const ctx = canvas.getContext("2d", {
-    willReadFrequently: true
-});
-
-let video = document.querySelector("video");
-video.style.backgroundColor = "white";
-
-video.width = CAM_WIDTH;
-video.height = CAM_HEIGHT;
-video.style.backgroundColor = "transparent"
-
-navigator.mediaDevices
-    .getUserMedia({
-        video: {
-            width: CAM_WIDTH,
-            height: CAM_HEIGHT,
-            frameRate: 24,
-        },
-    })
-    .then((stream) => {
-        video.srcObject = stream;
-        video.onloadedmetadata = function () {
-            video.play();
-        };
-    })
-    .catch((err) => {
-        console.error(err);
-    });
-
-video.addEventListener("playing", () => { drawToCanvas(); }, false);
+// =================================
+// Constants and State
+// =================================
 
 
-function drawToCanvas() {
-    if (video.paused || video.ended) return;
-    if (detector == "sobelcpu") {
-        SobelCPU();
-    } else if (detector == "depth") {
-        depth();
-    } else if (detector == "canny") {
-        Canny();
-    } else if (detector == "grayscale") {
-        Grayscale();
-    } else if (detector == "colorfilter") {
-        ColorFilter();
-    } else if (detector == "histogrameq") {
-        HistrogramEq();
-    } else {
-        ctx.drawImage(video, 0, 0, CAM_WIDTH, CAM_HEIGHT);
-    }
-
-    requestAnimationFrame(drawToCanvas);
+const CONFIG = {
+    CAM_WIDTH: 640,
+    CAM_HEIGHT: 480,
+    FRAME_RATE: 24,
+    SMOOTH_FACTOR: 0.8,
+    DEFAULT_DETECTOR: "raw"
 }
 
-// reduce possible noise
-let previousFrame = null;
-const SMOOTH_FACTOR = 0.8;
+const KERNELS = {
+    SOBEL_X: [
+        [1, 2, 1],
+        [0, 0, 0],
+        [-1, -2, -1]
+    ],
+    SOBEL_Y: [
+        [1, 0, -1],
+        [2, 0, -2],
+        [1, 0, -1]
+    ]
+}
+
+
+const state = {
+    detector: CONFIG.DEFAULT_DETECTOR,
+    previousFrame: null,
+    video: null,
+    canvas: null,
+    ctx: null
+}
+
+
+// =================================
+// Utility Functions
+// =================================
+
+function pixelIndex(x, y, width) {
+    return (y * width + x) * 4;
+}
+
+function rgbToGrayscale(r, g, b) {
+    return 0.299 * r + 0.587 * g + 0.114 * b;
+}
+
+function hexToRgb(hex) {
+    const hexCode = parseInt(hex.slice(1), 16);
+    return {
+        r: hexCode >> 16,
+        g: (hexCode >> 8) & 255,
+        b: hexCode & 255
+    };
+}
+
+function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value));
+}
+
+
+// =================================
+// Image Processing Functions
+// =================================
 
 function smoothFrame(frameData) {
-    const out = new Uint8ClampedArray(frameData.length);
+    const output = new Uint8ClampedArray(frameData.length);
 
-    if (!previousFrame) {
-        previousFrame = new Float32Array(frameData);
+    if (!state.previousFrame) {
+        state.previousFrame = new Float32Array(frameData);
         return frameData;
     }
 
     for (let i = 0; i < frameData.length; i++) {
-        previousFrame[i] = previousFrame[i] * SMOOTH_FACTOR + frameData[i] * (1 - SMOOTH_FACTOR);
-        out[i] = previousFrame[i];
+        state.previousFrame[i] =
+            state.previousFrame[i] * CONFIG.SMOOTH_FACTOR +
+            frameData[i] * (1 - CONFIG.SMOOTH_FACTOR);
+        output[i] = state.previousFrame[i];
     }
 
-    return out;
+    return output;
 }
 
-// https://en.wikipedia.org/wiki/Canny_edge_detector
-function Canny() {
-    ctx.drawImage(video, 0, 0, CAM_WIDTH, CAM_HEIGHT);
+// Create a Gaussian kernel of size `size` for blur
+function createGaussianKernel(size, sigma) {
+    const halfSize = Math.floor(size / 2);
+    const kernel = [];
+    let sum = 0;
 
-    const frame = ctx.getImageData(0, 0, CAM_WIDTH, CAM_HEIGHT);
-    // const pixels = frame.data;
-    const pixels = smoothFrame(frame.data);
-    const width = frame.width;
-    const height = frame.height;
+    // Create gaussian kernel value by index
+    const gaussianFunction = (i, j) => {
+        const sigma2 = sigma * sigma;
+        const coefficient = 1 / (2 * Math.PI * sigma2);
+        const exponent = -(i * i + j * j) / (2 * sigma2);
+        return coefficient * Math.exp(exponent);
+    };
 
-
-
-    const k = 5 // odd number
-    const halfK = Math.floor(k / 2);
-    const sigma = 2;
-
-    // Gausian Matrix function
-    function H(i, j) {
-
-        const sigma2 = sigma * sigma
-        const a = (1 / (2 * Math.PI * sigma2))
-        const b = i * i + j * j
-        const c = 2 * sigma2
-
-        return a * Math.exp(-b / c);
-    }
-
-    // Create Kernel
-    let kernelSum = 0;
-    const gausianKernel = [];
-    for (let j = 0; j < k; j++) {
-        let row = [];
-        for (let i = 0; i < k; i++) {
-            const ii = i - halfK; // Modern approch with 0-Index
-            const jj = j - halfK; // Modern approch with 0-Index
-            const value = H(ii, jj);
-
+    // Generate kernel values
+    for (let j = 0; j < size; j++) {
+        const row = [];
+        for (let i = 0; i < size; i++) {
+            const ii = i - halfSize;
+            const jj = j - halfSize;
+            const value = gaussianFunction(ii, jj);
             row.push(value);
-            kernelSum += value;
+            sum += value;
         }
-        gausianKernel.push(row);
+        kernel.push(row);
     }
 
-    // Normalize the kernel
-    for (let j = 0; j < k; j++) {
-        for (let i = 0; i < k; i++) {
-            gausianKernel[j][i] /= kernelSum;
-        }
-    }
+    // Normalize
+    return kernel.map(row => row.map(val => val / sum));
+}
 
-    // Create Gausian Grayscale image
-    let smoothedGrayscale = new Uint8ClampedArray(width * height);
-    function idx(x, y) { return (y * width + x) * 4; }
+// Apply Gaussian blur and convert to grayscale
+function applyGaussianBlur(pixels, width, height, kernelSize, sigma) {
+    const halfSize = Math.floor(kernelSize / 2);
+    const kernel = createGaussianKernel(kernelSize, sigma);
+    const output = new Uint8ClampedArray(width * height);
 
-
-    for (let y = halfK; y < height - halfK; y++) {
-        for (let x = halfK; x < width - halfK; x++) {
-
+    for (let y = halfSize; y < height - halfSize; y++) {
+        for (let x = halfSize; x < width - halfSize; x++) {
             let sum = 0;
 
-            // Grayscale
-            for (let ky = -halfK; ky <= halfK; ky++) {
-                for (let kx = -halfK; kx <= halfK; kx++) {
-
-                    const i = idx(x + kx, y + ky);
-
-                    const r = pixels[i];
-                    const g = pixels[i + 1];
-                    const b = pixels[i + 2];
-
-                    const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-
-                    sum += gray * gausianKernel[ky + halfK][kx + halfK];
-
+            for (let ky = -halfSize; ky <= halfSize; ky++) {
+                for (let kx = -halfSize; kx <= halfSize; kx++) {
+                    const pixelIdx = pixelIndex(x + kx, y + ky, width);
+                    const gray = rgbToGrayscale(
+                        pixels[pixelIdx],
+                        pixels[pixelIdx + 1],
+                        pixels[pixelIdx + 2]
+                    );
+                    sum += gray * kernel[ky + halfSize][kx + halfSize];
                 }
             }
 
-
-
-            smoothedGrayscale[y * width + x] = Math.round(sum);
+            output[y * width + x] = Math.round(sum);
         }
     }
 
+    return output;
+}
 
-    // Sobel
-    const gx = [
-        [1, 2, 1],
-        [0, 0, 0],
-        [-1, -2, -1]
-    ];
-    const gy = [
-        [1, 0, -1],
-        [2, 0, -2],
-        [1, 0, -1]
-    ];
-
+function applySobel(grayscaleData, width, height) {
     const gradientMagnitude = new Float32Array(width * height);
     const gradientAngle = new Float32Array(width * height);
+
     for (let y = 1; y < height - 1; y++) {
         for (let x = 1; x < width - 1; x++) {
             let sumX = 0;
@@ -219,55 +160,55 @@ function Canny() {
 
             for (let ky = -1; ky <= 1; ky++) {
                 for (let kx = -1; kx <= 1; kx++) {
-                    const i = idx(x + kx, y + ky);
+                    const idx = (y + ky) * width + (x + kx);
+                    const gray = grayscaleData[idx];
 
-                    const smoothedIdx = (y + ky) * width + (x + kx);
-                    const gray = smoothedGrayscale[smoothedIdx];;
-
-                    sumX += gray * gx[ky + 1][kx + 1];
-                    sumY += gray * gy[ky + 1][kx + 1];
-
+                    sumX += gray * KERNELS.SOBEL_X[ky + 1][kx + 1];
+                    sumY += gray * KERNELS.SOBEL_Y[ky + 1][kx + 1];
                 }
             }
 
-            const mag = Math.sqrt(sumX * sumX + sumY * sumY);
+            const magnitude = Math.sqrt(sumX * sumX + sumY * sumY);
             const angle = Math.atan2(sumY, sumX);
 
-            gradientMagnitude[y * width + x] = mag;
+            gradientMagnitude[y * width + x] = magnitude;
             gradientAngle[y * width + x] = angle;
-
         }
     }
 
-    // Gradient magnitude thresholding
-    let nonMaxSupp = new Float32Array(width * height).fill(0);
+    return { gradientMagnitude, gradientAngle };
+}
+
+// =================================
+// Edge Detection Algos
+// =================================
+
+function applyNonMaxSuppression(gradientMagnitude, gradientAngle, width, height) {
+    const output = new Float32Array(width * height).fill(0);
 
     for (let y = 1; y < height - 1; y++) {
         for (let x = 1; x < width - 1; x++) {
             const idx = y * width + x;
-
             let angle = gradientAngle[idx];
-            let magnitude = gradientMagnitude[idx];
+            const magnitude = gradientMagnitude[idx];
 
-            let degree = angle * (180 / Math.PI); // From radiens to degree
-            if (degree < 0) degree += 180; // Map to [0, 180]
+            // Convert angle to degrees and map to [0, 180]
+            let degree = angle * (180 / Math.PI);
+            if (degree < 0) degree += 180;
 
+            // Determine neighbor positions based on gradient direction
             let neighbor1X, neighbor1Y, neighbor2X, neighbor2Y;
 
             if ((degree >= 0 && degree < 22.5) || (degree >= 157.5 && degree <= 180)) {
-                // 0 degrees (Horizontal: check W and E)
                 neighbor1X = x + 1; neighbor1Y = y;
                 neighbor2X = x - 1; neighbor2Y = y;
             } else if (degree >= 22.5 && degree < 67.5) {
-                // 45 degrees (Diagonal: check NE and SW)
                 neighbor1X = x + 1; neighbor1Y = y - 1;
                 neighbor2X = x - 1; neighbor2Y = y + 1;
             } else if (degree >= 67.5 && degree < 112.5) {
-                // 90 degrees (Vertical: check N and S)
                 neighbor1X = x; neighbor1Y = y - 1;
                 neighbor2X = x; neighbor2Y = y + 1;
-            } else if (degree >= 112.5 && degree < 157.5) {
-                // 135 degrees (Diagonal: check NW and SE)
+            } else {
                 neighbor1X = x - 1; neighbor1Y = y - 1;
                 neighbor2X = x + 1; neighbor2Y = y + 1;
             }
@@ -275,50 +216,47 @@ function Canny() {
             const mag1 = gradientMagnitude[neighbor1Y * width + neighbor1X];
             const mag2 = gradientMagnitude[neighbor2Y * width + neighbor2X];
 
-            // apply cutoff
+            // Keep only local maxima
             if (magnitude >= mag1 && magnitude >= mag2) {
-                nonMaxSupp[idx] = magnitude; // Local max; keep it
-            } else {
-                nonMaxSupp[idx] = 0; // cutoff
+                output[idx] = magnitude;
             }
-
         }
     }
 
-    // Double Thresholding
+    return output;
+}
+
+function applyDoubleThreshold(nonMaxSuppressed, width, height, lowRatio, highRatio) {
+    const output = new Float32Array(nonMaxSuppressed.length);
+
+    // Find maximum magnitude
     let maxMag = 0;
-    for (let i = 0; i < nonMaxSupp.length; i++) {
-        if (nonMaxSupp[i] > maxMag) {
-            maxMag = nonMaxSupp[i];
-        }
+    for (let i = 0; i < nonMaxSuppressed.length; i++) {
+        if(nonMaxSuppressed[i] > maxMag) maxMag = nonMaxSuppressed[i];
     }
-    const lowTreshold = maxMag * lowThresholdEle.value;
-    const highTreshold = maxMag * highThresholdEle.value;
 
-    // let sorted = Array.from(nonMaxSupp).filter(v => v > 0).sort((a, b) => a - b);
-    // let median = sorted.length ? sorted[Math.floor(sorted.length * 0.75)] : 0;
-    // const lowTreshold = median * 0.5;
-    // const highTreshold = median * 1.5;
+    const lowThreshold = maxMag * lowRatio;
+    const highThreshold = maxMag * highRatio;
 
-    for (let y = 1; y < height - 1; y++) {
-        for (let x = 1; x < width - 1; x++) {
-            const idx = y * width + x;
-            const mag = nonMaxSupp[idx];
+    for (let i = 0; i < nonMaxSuppressed.length; i++) {
+        const mag = nonMaxSuppressed[i];
 
-            if (mag <= lowTreshold) {
-                nonMaxSupp[idx] = 0;
-            } else if (mag <= highTreshold) {
-                nonMaxSupp[idx] = 0.5;
-            } else {
-                nonMaxSupp[idx] = 1;
-            }
+        if (mag <= lowThreshold) {
+            output[i] = 0;
+        } else if (mag <= highThreshold) {
+            output[i] = 0.5; // Weak edge
+        } else {
+            output[i] = 1; // Strong edge
         }
     }
 
-    // https://en.wikipedia.org/wiki/Connected-component_labeling
-    // hysteresis // Blob analysis
-    function checkNeighborhood(x, y) {
-        // Iterate over the 3x3 window around the current pixel
+    return output;
+}
+
+function applyHysteresis(edgeMap, width, height) {
+    const output = new Float32Array(edgeMap);
+
+    const hasStrongNeighbor = (x, y) => {
         for (let j = -1; j <= 1; j++) {
             for (let i = -1; i <= 1; i++) {
                 if (i === 0 && j === 0) continue;
@@ -326,19 +264,15 @@ function Canny() {
                 const nx = x + i;
                 const ny = y + j;
 
-                // Check bounds
                 if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
 
-                const neighborIdx = ny * width + nx;
-
-                // If any neighbor is already a STRONG edge, return true
-                if (nonMaxSupp[neighborIdx] === 1) {
+                if (output[ny * width + nx] === 1) {
                     return true;
                 }
             }
         }
         return false;
-    }
+    };
 
     let changed = true;
     while (changed) {
@@ -346,93 +280,101 @@ function Canny() {
 
         for (let y = 1; y < height - 1; y++) {
             for (let x = 1; x < width - 1; x++) {
-                const mapIdx = y * width + x;
+                const idx = y * width + x;
 
-                // Only process WEAK edges (0.5)
-                if (nonMaxSupp[mapIdx] === 0.5) {
-                    // Check if this weak edge is connected to Strong
-                    if (checkNeighborhood(x, y)) {
-                        // Promote the Weak Edge
-                        nonMaxSupp[mapIdx] = 1;
-                        changed = true; // loop again
+                if (output[idx] === 0.5) {
+                    if (hasStrongNeighbor(x, y)) {
+                        output[idx] = 1;
+                        changed = true;
                     }
                 }
             }
         }
     }
 
-    // Remove leftovers
-    for (let i = 0; i < nonMaxSupp.length; i++) {
-        if (nonMaxSupp[i] === 0.5) {
-            nonMaxSupp[i] = 0;
+    // Remove remaining weak edges
+    for (let i = 0; i < output.length; i++) {
+        if (output[i] === 0.5) {
+            output[i] = 0;
         }
     }
 
+    return output;
+}
 
 
-    // Generate final output
+// =================================
+// Filters
+// =================================
+
+function applyCanny(ctx, video, width, height) {
+    ctx.drawImage(video, 0, 0, width, height);
+
+    const frame = ctx.getImageData(0, 0, width, height);
+    const pixels = smoothFrame(frame.data);
+
+    // Gaussian blur
+    const blurred = applyGaussianBlur(pixels, width, height, 5, 2);
+
+    // Sobel gradient computation
+    const { gradientMagnitude, gradientAngle } = applySobel(blurred, width, height);
+
+    // Non-maximum suppression
+    const nonMaxSuppressed = applyNonMaxSuppression(
+        gradientMagnitude,
+        gradientAngle,
+        width,
+        height
+    );
+
+    // Double thresholding
+    const lowThreshold = parseFloat(document.getElementById("lowThreshold").value);
+    const highThreshold = parseFloat(document.getElementById("highThreshold").value);
+    let thresholded = applyDoubleThreshold(
+        nonMaxSuppressed,
+        width,
+        height,
+        lowThreshold,
+        highThreshold
+    );
+
+    // Edge tracking by hysteresis
+    thresholded = applyHysteresis(thresholded, width, height);
+
+    // Generate output image
     const output = new Uint8ClampedArray(pixels.length);
-
     for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
-            const outIdx = idx(x, y);
-            const mapIdx = y * width + x;
-            const edge = nonMaxSupp[mapIdx] || 0;
+            const outIdx = pixelIndex(x, y, width);
+            const edge = thresholded[y * width + x];
 
-            let intensity = 0;
-
-            // Note: Weak Edges (0.5) and Suppressed Edges (0) remain strong edges (0)
             if (edge === 1) {
-                output[outIdx] = 0
-                output[outIdx + 1] = 255
-                output[outIdx + 2] = 0
-                output[outIdx + 3] = 255;
+                output[outIdx] = 0;
+                output[outIdx + 1] = 255;
+                output[outIdx + 2] = 0;
             } else if (edge === 0.5) {
-                output[outIdx] = 255
-                output[outIdx + 1] = 0
-                output[outIdx + 2] = 0
-                output[outIdx + 3] = 255;
+                output[outIdx] = 255;
+                output[outIdx + 1] = 0;
+                output[outIdx + 2] = 0;
             } else {
-                output[outIdx] = 0
-                output[outIdx + 1] = 0
-                output[outIdx + 2] = 0
-                output[outIdx + 3] = 255;
+                output[outIdx] = 0;
+                output[outIdx + 1] = 0;
+                output[outIdx + 2] = 0;
             }
-
-
+            output[outIdx + 3] = 255;
         }
     }
 
     frame.data.set(output);
     ctx.putImageData(frame, 0, 0);
-
 }
 
+function applySobelToOutput(ctx, video, width, height) {
+    ctx.drawImage(video, 0, 0, width, height);
 
-// https://en.wikipedia.org/wiki/Edge_detection#Other_first-order_methods
-function SobelCPU() {
-    ctx.drawImage(video, 0, 0, CAM_WIDTH, CAM_HEIGHT);
-
-    const frame = ctx.getImageData(0, 0, CAM_WIDTH, CAM_HEIGHT);
+    const frame = ctx.getImageData(0, 0, width, height);
     const pixels = frame.data;
-    const width = frame.width;
-    const height = frame.height;
-
     const output = new Uint8ClampedArray(pixels.length);
-
-    // Sobel kernels
-    const gx = [
-        [1, 2, 1],
-        [0, 0, 0],
-        [-1, -2, -1]
-    ];
-    const gy = [
-        [1, 0, -1],
-        [2, 0, -2],
-        [1, 0, -1]
-    ];
-
-    function idx(x, y) { return (y * width + x) * 4; }
 
     for (let y = 1; y < height - 1; y++) {
         for (let x = 1; x < width - 1; x++) {
@@ -441,28 +383,27 @@ function SobelCPU() {
 
             for (let ky = -1; ky <= 1; ky++) {
                 for (let kx = -1; kx <= 1; kx++) {
-                    const i = idx(x + kx, y + ky);
+                    const idx = pixelIndex(x + kx, y + ky, width);
+                    const gray = rgbToGrayscale(
+                        pixels[idx],
+                        pixels[idx + 1],
+                        pixels[idx + 2]
+                    );
 
-                    const r = pixels[i];
-                    const g = pixels[i + 1];
-                    const b = pixels[i + 2];
-                    const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-
-                    sumX += gray * gx[ky + 1][kx + 1];
-                    sumY += gray * gy[ky + 1][kx + 1];
-
+                    sumX += gray * KERNELS.SOBEL_X[ky + 1][kx + 1];
+                    sumY += gray * KERNELS.SOBEL_Y[ky + 1][kx + 1];
                 }
             }
 
-            const mag = Math.sqrt(sumX * sumX + sumY * sumY);
-            const outIdx = idx(x, y);
+            const magnitude = Math.sqrt(sumX * sumX + sumY * sumY);
+            const gradientOrientation = Math.atan2(sumX, sumY);
+            const outIdx = pixelIndex(x, y, width);
 
-            const gradOri = Math.atan2(sumX, sumY);
-
-
-            output[outIdx] = output[outIdx + 1] = output[outIdx + 2] = gradOri * mag;
-            output[outIdx + 3] = 255; // alpha;
-
+            const intensity = gradientOrientation * magnitude;
+            output[outIdx] = intensity;
+            output[outIdx + 1] = intensity;
+            output[outIdx + 2] = intensity;
+            output[outIdx + 3] = 255;
         }
     }
 
@@ -470,40 +411,36 @@ function SobelCPU() {
     ctx.putImageData(frame, 0, 0);
 }
 
+function applyDepth(ctx, video, width, height) {
+    ctx.drawImage(video, 0, 0, width, height);
 
-function depth() {
-    ctx.drawImage(video, 0, 0, CAM_WIDTH, CAM_HEIGHT);
-
-    const frame = ctx.getImageData(0, 0, CAM_WIDTH, CAM_HEIGHT);
+    const frame = ctx.getImageData(0, 0, width, height);
     const pixels = frame.data;
-    const width = frame.width;
-    const height = frame.height;
-
     const output = new Uint8ClampedArray(pixels.length);
-
-    function idx(x, y) { return (y * width + x) * 4; }
 
     const alpha = parseFloat(document.getElementById("depthAlpha").value);
     const invAlpha = 1 - alpha;
 
     for (let y = 1; y < height - 1; y++) {
-
-        const posDepth = 1 - y / height;
+        const positionDepth = 1 - y / height;
 
         for (let x = 1; x < width - 1; x++) {
-            const i = idx(x, y);
+            const idx = pixelIndex(x, y, width);
+            const gray = rgbToGrayscale(
+                pixels[idx],
+                pixels[idx + 1],
+                pixels[idx + 2]
+            );
 
-            const r = pixels[i];
-            const g = pixels[i + 1];
-            const b = pixels[i + 2];
+            const intensityDepth = 1 - gray / 255;
+            const depthValue = alpha * positionDepth + invAlpha * intensityDepth;
+            const gammaCorrection = Math.pow(depthValue, 0.8);
+            const intensity = clamp(gammaCorrection * 255, 0, 255);
 
-            const grayScale = 0.299 * r + 0.587 * g + 0.114 * b;
-            const intensityDepth = 1 - grayScale / 255; // Enhanced depth calculation with better contrast
-            const depthValue = alpha * posDepth + invAlpha * intensityDepth;
-            const gammeCorrection = Math.pow(depthValue, 0.8);
-
-            output[i] = output[i + 1] = output[i + 2] = Math.min(255, Math.max(0, gammeCorrection * 255));
-            output[i + 3] = 255; // alpha;
+            output[idx] = intensity;
+            output[idx + 1] = intensity;
+            output[idx + 2] = intensity;
+            output[idx + 3] = 255;
         }
     }
 
@@ -511,31 +448,26 @@ function depth() {
     ctx.putImageData(frame, 0, 0);
 }
 
-function Grayscale() {
-    ctx.drawImage(video, 0, 0, CAM_WIDTH, CAM_HEIGHT);
+function applyGrayscale(ctx, video, width, height) {
+    ctx.drawImage(video, 0, 0, width, height);
 
-    const frame = ctx.getImageData(0, 0, CAM_WIDTH, CAM_HEIGHT);
+    const frame = ctx.getImageData(0, 0, width, height);
     const pixels = frame.data;
-    const width = frame.width;
-    const height = frame.height;
-
     const output = new Uint8ClampedArray(pixels.length);
-
-    function idx(x, y) { return (y * width + x) * 4; }
 
     for (let y = 1; y < height - 1; y++) {
         for (let x = 1; x < width - 1; x++) {
+            const idx = pixelIndex(x, y, width);
+            const gray = rgbToGrayscale(
+                pixels[idx],
+                pixels[idx + 1],
+                pixels[idx + 2]
+            );
 
-            const i = idx(x, y);
-            const r = pixels[i];
-            const g = pixels[i + 1];
-            const b = pixels[i + 2];
-            const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-
-
-            output[i] = output[i + 1] = output[i + 2] = gray;
-            output[i + 3] = 255; // alpha;
-
+            output[idx] = gray;
+            output[idx + 1] = gray;
+            output[idx + 2] = gray;
+            output[idx + 3] = 255;
         }
     }
 
@@ -543,57 +475,34 @@ function Grayscale() {
     ctx.putImageData(frame, 0, 0);
 }
 
+function applyColorFilter(ctx, video, width, height) {
+    ctx.drawImage(video, 0, 0, width, height);
 
-function HexToRgb(hex) {
-    let hexCode = parseInt(hex.slice(1), 16);
-
-    return {
-        r: hexCode >> 16,
-        g: (hexCode >> 8) & 255,
-        b: hexCode & 255
-    }
-}
-
-function ColorFilter() {
-    ctx.drawImage(video, 0, 0, CAM_WIDTH, CAM_HEIGHT);
-
-    const frame = ctx.getImageData(0, 0, CAM_WIDTH, CAM_HEIGHT);
+    const frame = ctx.getImageData(0, 0, width, height);
     const pixels = frame.data;
-    const width = frame.width;
-    const height = frame.height;
-
     const output = new Uint8ClampedArray(pixels.length);
 
-    function idx(x, y) { return (y * width + x) * 4; }
-
-    const filterRgb = HexToRgb(document.getElementById("colorFilterInput").value);
-
-    const blendStrength = document.getElementById("colorIntensityRange").value;
+    const filterColor = hexToRgb(document.getElementById("colorFilterInput").value);
+    const blendStrength = parseFloat(document.getElementById("colorIntensityRange").value);
     const inverseStrength = 1.0 - blendStrength;
 
     for (let y = 1; y < height - 1; y++) {
         for (let x = 1; x < width - 1; x++) {
+            const idx = pixelIndex(x, y, width);
+            const r = pixels[idx];
+            const g = pixels[idx + 1];
+            const b = pixels[idx + 2];
 
-            const i = idx(x, y);
-            const r = pixels[i];
-            const g = pixels[i + 1];
-            const b = pixels[i + 2];
+            const gray = rgbToGrayscale(r, g, b);
 
-            const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+            const filteredR = (gray * filterColor.r) / 255;
+            const filteredG = (gray * filterColor.g) / 255;
+            const filteredB = (gray * filterColor.b) / 255;
 
-            const filteredR = (gray * filterRgb.r) / 255;
-            const filteredG = (gray * filterRgb.g) / 255;
-            const filteredB = (gray * filterRgb.b) / 255;
-
-            const newR = (r * inverseStrength) + (filteredR * blendStrength);
-            const newG = (g * inverseStrength) + (filteredG * blendStrength);
-            const newB = (b * inverseStrength) + (filteredB * blendStrength);
-
-            output[i] = newR;
-            output[i + 1] = newG;
-            output[i + 2] = newB;
-            output[i + 3] = 255;
-
+            output[idx] = r * inverseStrength + filteredR * blendStrength;
+            output[idx + 1] = g * inverseStrength + filteredG * blendStrength;
+            output[idx + 2] = b * inverseStrength + filteredB * blendStrength;
+            output[idx + 3] = 255;
         }
     }
 
@@ -601,33 +510,25 @@ function ColorFilter() {
     ctx.putImageData(frame, 0, 0);
 }
 
-function HistrogramEq() {
-    ctx.drawImage(video, 0, 0, CAM_WIDTH, CAM_HEIGHT);
 
-    const frame = ctx.getImageData(0, 0, CAM_WIDTH, CAM_HEIGHT);
+function applyHistogramEq(ctx, video, width, height) {
+    ctx.drawImage(video, 0, 0, width, height);
+
+    const frame = ctx.getImageData(0, 0, width, height);
     const pixels = frame.data;
-    const width = frame.width;
-    const height = frame.height;
 
-    
-
-    function idx(x, y) { return (y * width + x) * 4; }
-
-    const luminance = new Uint8ClampedArray(pixels.length / 4);
+    // Compute luminance and histogram
+    const luminance = new Uint8ClampedArray(width * height);
     const histogram = new Uint32Array(256).fill(0);
-    const cdfMap = new Uint8ClampedArray(256);
-
-    // Compute Luminance
 
     for (let y = 1; y < height - 1; y++) {
         for (let x = 1; x < width - 1; x++) {
-
-            const i = idx(x, y);
-            const r = pixels[i];
-            const g = pixels[i + 1];
-            const b = pixels[i + 2];
-
-            const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+            const idx = pixelIndex(x, y, width);
+            const gray = rgbToGrayscale(
+                pixels[idx],
+                pixels[idx + 1],
+                pixels[idx + 2]
+            );
             const lum = Math.round(gray);
 
             luminance[y * width + x] = lum;
@@ -635,48 +536,175 @@ function HistrogramEq() {
         }
     }
 
-    // Compute CDF
+    // Compute CDF and mapping
+    const cdfMap = new Uint8ClampedArray(256);
     let cumSum = 0;
 
-    let firstNonZero = 0;
-    for (let i = 0;i < 256; i++) {
-        if (histogram[i] > 0) {
-            firstNonZero = histogram[i];
-            break;
-        }
-    }
+    const firstNonZero = histogram.find(count => count > 0) || 0;
+    const totalPixels = (width - 2) * (height - 2);
 
-    // H'(i) = round((CDF(i) - CDF_min) / (M * N - CDF_min) * 255)
     for (let i = 0; i < 256; i++) {
         cumSum += histogram[i];
-
         const mappedValue = Math.round(
-            ((cumSum - firstNonZero) / ((width - 2) * (height - 2) - firstNonZero)) * 255
-        )
-
+            ((cumSum - firstNonZero) / (totalPixels - firstNonZero)) * 255
+        );
         cdfMap[i] = Math.max(0, mappedValue);
     }
 
-
-
+    // Apply mapping
     const output = new Uint8ClampedArray(pixels.length);
 
     for (let y = 1; y < height - 1; y++) {
         for (let x = 1; x < width - 1; x++) {
-
-            const i = idx(x, y);
+            const idx = pixelIndex(x, y, width);
             const intensity = cdfMap[luminance[y * width + x]];
 
-            output[i] = output[i + 1] = output[i + 2] = intensity;
-            output[i + 3] = 255;
+            output[idx] = intensity;
+            output[idx + 1] = intensity;
+            output[idx + 2] = intensity;
+            output[idx + 3] = 255;
         }
     }
-
-
 
     frame.data.set(output);
     ctx.putImageData(frame, 0, 0);
 }
+
+
+// =================================
+// UI Events
+// =================================
+
+function setupDetectorButtons() {
+    const detectorMap = {
+        raw: "",
+        sobel: "sobel",
+        depth: "depth",
+        canny: "canny",
+        grayscale: "grayscale",
+        colorFilter: "colorfilter",
+        histogramEq: "histogrameq"
+    };
+
+
+    Object.entries(detectorMap).forEach(([id, detector]) => {
+        document.getElementById(id)?.addEventListener("click", () => {
+            state.detector = detector;
+        });
+    });
+
+}
+
+function setupParameterControls() {
+    const controls = [
+        { sliderId: "depthAlpha", labelId: "alpha" },
+        { sliderId: "colorIntensityRange", labelId: "colorIntensity" },
+        { sliderId: "highThreshold", labelId: "high" },
+        { sliderId: "lowThreshold", labelId: "low" }
+    ];
+
+    controls.forEach(({ sliderId, labelId }) => {
+        const slider = document.getElementById(sliderId);
+        const label = document.getElementById(labelId);
+
+        if (slider && label) {
+            slider.addEventListener("input", () => {
+                label.innerText = slider.value;
+            });
+        }
+    });
+}
+
+// =================================
+// Video/Canvas 
+// =================================
+
+async function initializeCamera() {
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+                width: CONFIG.CAM_WIDTH,
+                height: CONFIG.CAM_HEIGHT,
+                frameRate: CONFIG.FRAME_RATE
+            }
+        });
+
+        state.video.srcObject = stream;
+        state.video.onloadedmetadata = () => {
+            state.video.play();
+        };
+    } catch (error) {
+        console.error("Camera initialization error:", error);
+    }
+}
+
+function setupCanvas() {
+    state.canvas = document.getElementById("canvas");
+    state.canvas.width = CONFIG.CAM_WIDTH;
+    state.canvas.height = CONFIG.CAM_HEIGHT;
+
+    state.ctx = state.canvas.getContext("2d", {
+        willReadFrequently: true
+    });
+}
+
+function setupVideo() {
+    state.video = document.querySelector("video");
+    state.video.width = CONFIG.CAM_WIDTH;
+    state.video.height = CONFIG.CAM_HEIGHT;
+    state.video.style.backgroundColor = "transparent";
+
+    state.video.addEventListener("playing", () => {
+        renderLoop();
+    }, false);
+}
+
+function renderLoop() {
+    if (state.video.paused || state.video.ended) return;
+
+    const det = state.detector;
+
+    if (det == "grayscale") {
+        applyGrayscale(state.ctx, state.video, CONFIG.CAM_WIDTH, CONFIG.CAM_HEIGHT)
+    } else if (det == "colorfilter") {
+        applyColorFilter(state.ctx, state.video, CONFIG.CAM_WIDTH, CONFIG.CAM_HEIGHT)
+    } else if (det == "depth") {
+       applyDepth(state.ctx, state.video, CONFIG.CAM_WIDTH, CONFIG.CAM_HEIGHT)
+    } else if (det == "histogrameq") {
+       applyHistogramEq(state.ctx, state.video, CONFIG.CAM_WIDTH, CONFIG.CAM_HEIGHT)
+    } else if (det == "sobel") {
+        applySobelToOutput(state.ctx, state.video, CONFIG.CAM_WIDTH, CONFIG.CAM_HEIGHT)
+    } else if(det == "canny") {
+        applyCanny(state.ctx, state.video, CONFIG.CAM_WIDTH, CONFIG.CAM_HEIGHT)
+    } else {
+        state.ctx.drawImage(state.video, 0, 0, CONFIG.CAM_WIDTH, CONFIG.CAM_HEIGHT);
+    }
+
+    requestAnimationFrame(renderLoop);
+}
+
+// =================================
+// Init 
+// =================================
+
+
+function initialize() {
+  setupCanvas();
+  setupVideo();
+  initializeCamera();
+  setupDetectorButtons();
+  setupParameterControls();
+}
+
+// Start application when DOM is ready
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initialize);
+} else {
+  initialize();
+}
+
+// ============================
+
 
 
 // Ideas by AI
@@ -696,3 +724,4 @@ function HistrogramEq() {
 // Depth illusion: simulate fake parallax using grayscale brightness as depth
 // Motion trails: accumulate motion over frames to create ghostly afterimages
 // “Thermal camera”: map brightness → color palette.
+
