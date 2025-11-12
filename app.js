@@ -810,7 +810,7 @@ if (document.readyState === "loading") {
 
 
 
-// Ideas by AI
+// Ideas by AI:
 // Background Subtraction
 // Optical Flow (Lucas–Kanade or Horn–Schunck Lite)
 // Hough Transform (for Lines or Circles)
