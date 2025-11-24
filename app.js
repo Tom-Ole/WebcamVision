@@ -11,9 +11,9 @@
 
 
 const CONFIG = {
-    CAM_WIDTH: 640,
-    CAM_HEIGHT: 480,
-    FRAME_RATE: 24,
+    CAM_WIDTH: 1920,
+    CAM_HEIGHT: 1080,
+    FRAME_RATE: 60,
     SMOOTH_FACTOR: 0.8,
     DEFAULT_DETECTOR: "motiondetection"
 }
